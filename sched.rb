@@ -52,10 +52,10 @@ class Division
   # Expected format: division_string:#A:#B:#C:schedule_prefix
   def initialize
     @division = {}
-    read
-    dump_all
+    _read
   end
-  def read
+
+  def _read
     File.open("division.cfg") do |file|
       while line = file.gets
         entry = line.split(":")
@@ -63,9 +63,12 @@ class Division
       end
     end
   end
-  def all_teams(division)
+  
+  def get_all_teams(division)
     teams = []
-    (1..count_a_teams(division)).each do |team_num| teams.push(prefix(division) + team_num.to_s) end
+    (1..count_a_teams(division)).each do |team_num| teams.push(prefix(division) + 'A' + team_num.to_s) end
+    (1..count_b_teams(division)).each do |team_num| teams.push(prefix(division) + 'B' + team_num.to_s) end
+    (1..count_c_teams(division)).each do |team_num| teams.push(prefix(division) + 'C' + team_num.to_s) end
     return teams
   end
 
@@ -165,102 +168,154 @@ class Scheduler
     #@sched = OldCsvSched.new("sched_from_andy_unavailRemoved.csv")
     @csv_sched = CsvSched.new("test1.csv")
     @sched = @csv_sched.get_unallocated_ice
+    @db = SQLite3::Database.new(@file)
   end
 
   def _create
-    return if File.exists?(@file)
-    SQLite3::Database.new(@file) do |db|
-      db.execute("CREATE TABLE schedule (
-                  Week VARCHAR,
-                  ScheduleDate VARCHAR,
-                  Location VARCHAR,
-                  ScheduleType VARCHAR,
-                  GameNumber VARCHAR,
-                  StartTime VARCHAR,
-                  EndTime VARCHAR,
-                  Duration INTEGER,
-                  DivisionName VARCHAR,
-                  HomeTeam VARCHAR,
-                  VisitorTeam VARCHAR,
-                  DateTime, VARCHAR, 
-                  Weekday VARCHAR,
-                  Hour INTEGER,
-                  Minute INTEGER);")
+    @db.execute("CREATE TABLE if not exists schedule (
+                 Week VARCHAR,
+                 ScheduleDate VARCHAR,
+                 Location VARCHAR,
+                 ScheduleType VARCHAR,
+                 GameNumber VARCHAR,
+                 StartTime VARCHAR,
+                 EndTime VARCHAR,
+                 Duration INTEGER,
+                 DivisionName VARCHAR,
+                 HomeTeam VARCHAR,
+                 VisitorTeam VARCHAR,
+                 DateTime VARCHAR, 
+                 Weekday VARCHAR,
+                 Hour INTEGER,
+                 Minute INTEGER);")
 
-      db.execute("CREATE TABLE time_balance (
-                  Team VARCHAR,
-                  Time VARCHAR,
-                  Priority 
-                  Count INTEGER);")
+    @db.execute("CREATE TABLE if not exists time_balance (
+                 Team VARCHAR,
+                 Time VARCHAR,
+                 Priority 
+                 Count INTEGER);")
 
-      db.execute("CREATE TABLE location_balance (
-                  Team VARCHAR,
-                  Location VARCHAR,
-                  Count INTEGER);")
+    @db.execute("CREATE TABLE if not exists location_balance (
+                 Team VARCHAR,
+                 Location VARCHAR,
+                 Count INTEGER);")
 
-      db.execute("CREATE TABLE solo_balance (
-                  Team VARCHAR,
-                  Count INTEGER);")
-    end
+    @db.execute("CREATE TABLE if not exists solo_balance (
+                 Team VARCHAR,
+                 Count INTEGER);")
   end
 
   def _insert_new_icetimes
-    SQLite3::Database.new(@file) do |db|
-      insert_q = "INSERT INTO schedule VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" 
-      @sched.each do |icetime|
-        db.execute(insert_q, 
-                   icetime['Week'], 
-                   icetime['ScheduleDate'],
-                   icetime['Location'], 
-                   icetime['ScheduleType'], 
-                   icetime['GameNumber'], 
-                   icetime['StartTime'], 
-                   icetime['EndTime'], 
-                   icetime['Duration'].to_i, 
-                   icetime['DivisionName'], 
-                   icetime['HomeTeam'], 
-                   icetime['VisitorTeam'], 
-                   icetime['DateTime'].to_s, 
-                   icetime['Weekday'], 
-                   icetime['Hour'], 
-                   icetime['Minute'])
-      end
+    insert_q = "INSERT INTO schedule VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)" 
+    @sched.each do |icetime|
+      @db.execute(insert_q, 
+                  icetime['Week'], 
+                  icetime['ScheduleDate'],
+                  icetime['Location'], 
+                  icetime['ScheduleType'], 
+                  icetime['GameNumber'], 
+                  icetime['StartTime'], 
+                  icetime['EndTime'], 
+                  icetime['Duration'].to_i, 
+                  icetime['DivisionName'], 
+                  icetime['HomeTeam'], 
+                  icetime['VisitorTeam'], 
+                  icetime['DateTime'].to_s, 
+                  icetime['Weekday'], 
+                  icetime['Hour'], 
+                  icetime['Minute'])
     end
   end
 
-  def _dump_all
-    SQLite3::Database.new(@file) do |db|
+  def _print_final_allocations
+    query = 'select count(hour) from schedule where hour = ? and (HomeTeam = ? or VisitorTeam = ?)' 
+    teams = @div.get_all_teams('Peewee')
+    line = "____"
+    teams.each do |team| line << "|%3s" %team[-3..-1] || team end
+    count = 0
+    (1..23).each do |hour|
+      temp_line = "\n|%3s" %hour
+      found = false
+      teams.each do |team|
+        @db.execute(query, hour, team, team) do |data| 
+          p data[0] if data[0] != 0
+          count+= data[0] if data[0] != 0
+          found = true if data[0] > 0
+          temp_line << "|%3s" %data[0]
+        end
+      end
+      line << temp_line if found
     end
+    p count
+    puts line
   end
 
   def _dump_balance
-    SQLite3::Database.new(@file) do |db|
-      (1..23).each do |hour|
-        query = 'select count(hour) from schedule where hour is ?' 
-        db.execute(query, hour) do |data| puts(hour.to_s + ":" +data[0].to_s) end
-      end
+    (1..23).each do |hour|
+      query = 'select count(hour) from schedule where hour is ?' 
+      @db.execute(query, hour) do |data| puts(hour.to_s + ":" +data[0].to_s) end
     end
   end
 
   def _count_times_to_balance(time)
-    SQLite3::Database.new(@file) do |db|
-      query = 'select count(starttime) from schedule where starttime like ? and HomeTeam is NULL'
-      db.execute(query, time) do |data| return data[0] end
-    end
+    query = 'select count(starttime) from schedule where starttime like ? and HomeTeam is NULL'
+    @db.execute(query, time) do |data| return data[0] end
   end
 
-  def _count_times_in_week(week)
-    SQLite3::Database.new(@file) do |db|
-      query = 'select count(week) from schedule where week = ?'
-      db.execute(query, week) do |data| return data[0] end
-    end
+  def _count_times_to_balance(time)
+    query = 'select count(starttime) from schedule where starttime like ? and HomeTeam is NULL'
+    @db.execute(query, time) do |data| return data[0] end
   end
 
-  def _find_team_counts(week, weekday, time)
-    SQLite3::Database.new(@file) do |db|
-      query = 'select count(starttime) from schedule where starttime like ? and HomeTeam is NULL'
-      db.execute(query, time) do |data| return data[0] end
+  def _count_total_hours_in_week(week)
+    query = 'select count(week) from schedule where week = ?'
+    @db.execute(query, week) do |data| return data[0] end
+  end
+
+  def _get_teams_matching_hours_count(hour, count)
+    query = 'select count(hour) from schedule where hour == ? and (hometeam = ? or visitorteam = ?);'
+    team_counts = []
+    @div.get_all_teams('Peewee').each do |team|
+      @db.execute(query, hour, team, team).each do |data| 
+        team_counts.push(team) if data[0] == count 
+      end
     end
+    #p team_counts unless team_counts == {}
+    return team_counts 
+  end
+
+  def _find_preallocations(week)
+    query = 'select weekday from schedule where week = ? and (hometeam = ? or visitorteam = ?);'
+    week_preallocations = {}
+    #@db.execute('update schedule set hometeam = "PW_B1",visitorteam = "PW_B1" where datetime = "2014-10-05T18:30:00+00:00";')
+    #@db.execute('update schedule set hometeam = "PW_B1" where datetime = "2014-10-04T18:00:00+00:00";')
+    @div.get_all_teams('Peewee').each do |team|
+      week_preallocations[team] = [] 
+      @db.execute(query, week, team, team).each do |data| 
+        week_preallocations[team].push(data[0])
+      end
+    end
+    #p week_preallocations unless week_preallocations == {}
+    return week_preallocations
+  end
+
+  def _get_weeks()
+    query = 'select distinct week from schedule order by datetime;'
+    weeks = []
+    @db.execute(query).each do |week| weeks.push(week[0]) end 
+    return weeks
+  end
+
+  def _get_times_for_day(week, weekday)
+    query = 'select location,hour,minute,datetime from schedule where week = ? and weekday = ?'
+    timeslots = []
+    @db.execute(query,week,weekday).each do |data| timeslots.push(data) end
+    return timeslots
+  end
+
+  def _update_times_for_day(hometeam, visitorteam, location, datetime)
+    query = 'update schedule set hometeam = ?, visitorteam = ? where location = ? and datetime = ?'
+    @db.execute(query,hometeam,visitorteam,location,datetime)
   end
 
 
@@ -272,10 +327,53 @@ class Scheduler
     time_7a = _count_times_to_balance("7:%AM")
     time_8a = _count_times_to_balance("8:%AM")
     time_8p = _count_times_to_balance("8:%PM")
-    _dump_balance
+    #_dump_balance
+    _get_weeks.each do |week|
+      preallocations = _find_preallocations(week)
+      allocations = preallocations.clone
+      #_get_teams_matching_hours_count(18, 0) 
+      #_get_teams_matching_hours_count(18, 1) 
+      #_get_teams_matching_hours_count(18, 2) 
+      #_get_teams_matching_hours_count(18, 3) 
+      ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].each do |weekday|
+        #for num_days in 0..1
+          teams_with_zero_days = []
+          teams_with_one_day = []
+          allocations.each do |team,days| teams_with_zero_days.push(team) if days.length == 0 && nil == days.find_index(weekday) end
+          allocations.each do |team,days| teams_with_one_day.push(team) if days.length == 1 && nil == days.find_index(weekday) end
+          _get_times_for_day(week, weekday).each do |timeslot|
+            team1_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
+            team1 = get_random_element(team1_array)
+            team1_array.delete(team1)
+            team2_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
+            team2 = get_random_element(team2_array)
+            team2_array.delete(team2)
+            _update_times_for_day(team1,team2,timeslot[0],timeslot[3])
+            allocations[team1].push(weekday)
+            allocations[team2].push(weekday)
+            #p teams_with_zero_days
+            #team = get_random_element(teams_with_zero_days)
+          end
+          p weekday
+          _print_final_allocations
+        #end
+       #timeslots = _get_times_for_day(week, weekday).each 
+       #p timeslots
+       #p timeslots.class
+       #timeslots.each do |timeslot|
+       #   p timeslot
+       # end
+      end
+    end
+
+    # generated_one_week_at_a_time
+    # - For each team, per week, query preallocated ice (manually by convenor) 
+    #   - get back the day it is on, store in array to get a COUNT of days allocated.
     
     # Count # of location-balance worthy icetimes
     # Count # of solo ice times
+    # Count # day-of-week ice
+    # Count # weekday ice
     # Count # of Other-Tier practie ice times
     # Count every other TIME also.
     # PLAN the balancing for the future weeks, based on previous allocations
@@ -291,3 +389,4 @@ end
 
 schedule = Scheduler.new()
 schedule.generate
+schedule._print_final_allocations
