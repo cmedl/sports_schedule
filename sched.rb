@@ -162,11 +162,11 @@ end
 
 
 class Scheduler
-  def initialize
+  def initialize(test_file)
     @file = "peewee_sched.db"
     @div = Division.new()
     #@sched = OldCsvSched.new("sched_from_andy_unavailRemoved.csv")
-    @csv_sched = CsvSched.new("test1.csv")
+    @csv_sched = CsvSched.new(test_file)
     @sched = @csv_sched.get_unallocated_ice
     @db = SQLite3::Database.new(@file)
   end
@@ -232,19 +232,32 @@ class Scheduler
     teams = @div.get_all_teams('Peewee')
     line = "____"
     teams.each do |team| line << "|%3s" %team[-3..-1] || team end
+    line << "|TOT|"
     count = 0
+    team_sum = {}
     (1..23).each do |hour|
+      sum = 0
       temp_line = "\n|%3s" %hour
       found = false
       teams.each do |team|
         @db.execute(query, hour, team, team) do |data| 
-          p data[0] if data[0] != 0
-          count+= data[0] if data[0] != 0
+          #p data[0] if data[0] != 0
+          sum+= data[0] if data[0] != 0
+          team_sum[team] = 0 unless team_sum.has_key?(team)
+          team_sum[team]+=data[0]
+          count+=sum
           found = true if data[0] > 0
           temp_line << "|%3s" %data[0]
         end
       end
-      line << temp_line if found
+      line << temp_line << "|%3s|" %sum if found
+    end
+    line << "\n----"
+    teams.each do |team| line << "----" end
+    line << "----"
+    line << "\n|TOT"
+    teams.each do |team|
+      line << "|%3s" %team_sum[team]
     end
     p count
     puts line
@@ -307,7 +320,7 @@ class Scheduler
   end
 
   def _get_times_for_day(week, weekday)
-    query = 'select location,hour,minute,datetime from schedule where week = ? and weekday = ?'
+    query = 'select location,hour,minute,datetime from schedule where week = ? and weekday = ? and hometeam is NULL'
     timeslots = []
     @db.execute(query,week,weekday).each do |data| timeslots.push(data) end
     return timeslots
@@ -329,34 +342,71 @@ class Scheduler
     time_8p = _count_times_to_balance("8:%PM")
     #_dump_balance
     _get_weeks.each do |week|
-      preallocations = _find_preallocations(week)
-      allocations = preallocations.clone
+
+      #next unless week == "Sep 22 - 28" 
+      #next unless week == "Nov 10 - 16" 
+      #next unless week == "Dec 1 - 7" 
+      
+      puts "---------------", week
+      future_allocations = _find_preallocations(week)
+      allocations = _find_preallocations(week)
       #_get_teams_matching_hours_count(18, 0) 
       #_get_teams_matching_hours_count(18, 1) 
       #_get_teams_matching_hours_count(18, 2) 
       #_get_teams_matching_hours_count(18, 3) 
       ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].each do |weekday|
-        #for num_days in 0..1
-          teams_with_zero_days = []
-          teams_with_one_day = []
-          allocations.each do |team,days| teams_with_zero_days.push(team) if days.length == 0 && nil == days.find_index(weekday) end
-          allocations.each do |team,days| teams_with_one_day.push(team) if days.length == 1 && nil == days.find_index(weekday) end
-          _get_times_for_day(week, weekday).each do |timeslot|
-            team1_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
-            team1 = get_random_element(team1_array)
-            team1_array.delete(team1)
-            team2_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
-            team2 = get_random_element(team2_array)
-            team2_array.delete(team2)
-            _update_times_for_day(team1,team2,timeslot[0],timeslot[3])
-            allocations[team1].push(weekday)
-            allocations[team2].push(weekday)
-            #p teams_with_zero_days
-            #team = get_random_element(teams_with_zero_days)
-          end
+        # count allocations for the week
+        # count allocations SO FAR this week
+        # Any allocations from this weekday are not in the future
+        @div.get_all_teams('Peewee').each do |team|
+          future_allocations[team].delete(weekday)
+        end
+        
+        teams_with_zero_days = []
+        teams_with_one_day = []
+        teams_with_future_days = []
+        teams_with_one_future_day = []
+        allocations.each do |team,days| teams_with_zero_days.push(team) if days.length == 0 && nil == days.find_index(weekday) end
+        allocations.each do |team,days| teams_with_one_day.push(team) if days.length == 1 && nil == days.find_index(weekday) end
+        future_allocations.each do |team,days| teams_with_future_days.push(team) if days.length == 1 && nil == days.find_index(weekday) end
+        teams_with_one_day.each do |team| teams_with_one_future_day.push(team) if teams_with_future_days.find_index(team) end
+
+        _get_times_for_day(week, weekday).each do |timeslot|
           p weekday
-          _print_final_allocations
-        #end
+          puts "0:",teams_with_zero_days.to_s
+          puts "F:",teams_with_one_future_day.to_s
+          puts "1:",teams_with_one_day.to_s
+          if teams_with_zero_days.length != 0 
+            team1_array = teams_with_zero_days 
+          elsif teams_with_one_future_day.length != 0 
+            team1_array = teams_with_one_future_day
+          else
+            team1_array = teams_with_one_day
+          end
+
+
+          # MEDL PROBLEM
+          # When scheduling on a day where the only candidates are those with FUTURE ice times already allocated
+          # Need to select one from each day, if possible.
+
+
+          #team1_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
+          team1 = get_random_element(team1_array)
+          team1_array.delete(team1)
+          if teams_with_zero_days.length != 0 
+            team2_array = teams_with_zero_days 
+          elsif teams_with_one_future_day.length != 0 
+            team2_array = teams_with_one_future_day
+          else
+            team2_array = teams_with_one_day
+          end
+          #team2_array = teams_with_zero_days.length != 0 ? teams_with_zero_days : teams_with_one_day
+          team2 = get_random_element(team2_array)
+          team2_array.delete(team2)
+          _update_times_for_day(team1,team2,timeslot[0],timeslot[3])
+          allocations[team1].push(weekday)
+          allocations[team2].push(weekday)
+        end
        #timeslots = _get_times_for_day(week, weekday).each 
        #p timeslots
        #p timeslots.class
@@ -387,6 +437,7 @@ class Scheduler
   end
 end
 
-schedule = Scheduler.new()
+#schedule = Scheduler.new("test1.csv")
+schedule = Scheduler.new("sched_big_empty.csv")
 schedule.generate
 schedule._print_final_allocations
