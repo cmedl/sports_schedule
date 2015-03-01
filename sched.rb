@@ -316,7 +316,7 @@ class TimeAllocations
     @allocations = @db.find_preallocations(week)
   end
 
-  def allocate_two_teams2(weekday)
+  def allocate_two_teams(weekday)
     # count allocations for the week
     # count allocations SO FAR this week
     # Any allocations from this weekday are not in the future
@@ -366,88 +366,6 @@ class TimeAllocations
       team2_array = teams_with_one_day
     end
     team2 = get_random_element(team2_array)
-    team2_array.delete(team2)
-
-    x = "------ Scheduling: "
-    x << team1 << " and " << team2
-    puts x
-    @allocations[team1].push(weekday)
-    @allocations[team2].push(weekday)
-    return team1,team2
-  end
-  def allocate_two_teams(weekday)
-    # count allocations for the week
-    # count allocations SO FAR this week
-    # Any allocations from this weekday are not in the future
-    @div.get_all_teams('Peewee').each do |team|
-      @future_allocations[team].delete(weekday)
-    end
-    
-    teams_with_zero_days = []
-    teams_with_one_day = []
-    teams_with_future_days = []
-    teams_with_future_saturday = []
-    teams_with_future_sunday = []
-    teams_with_one_future_day = []
-    @allocations.each do |team,days| teams_with_zero_days.push(team) if days.length == 0 && nil == days.find_index(weekday) end
-    @allocations.each do |team,days| teams_with_one_day.push(team) if days.length == 1 && nil == days.find_index(weekday) end
-    @future_allocations.each do |team,days| teams_with_future_days.push(team) if days.length == 1 && nil == days.find_index(weekday) end
-    @future_allocations.each do |team,days| teams_with_future_saturday.push(team) if days.length == 1 && days.find_index("Saturday") end
-    @future_allocations.each do |team,days| teams_with_future_sunday.push(team) if days.length == 1 && days.find_index("Sunday") end
-    teams_with_one_day.each do |team| teams_with_one_future_day.push(team) if teams_with_future_days.find_index(team) end
-
-    p weekday
-    x = "0:";x << teams_with_zero_days.to_s
-    puts x unless teams_with_zero_days.length == 0
-    x = "F:";x << teams_with_one_future_day.to_s
-    puts x unless teams_with_one_future_day.length == 0
-    x = "1:";x << teams_with_one_day.to_s
-    puts x unless teams_with_one_day.length == 0
-
-    day_filter = []
-    if teams_with_zero_days.length != 0 
-      team1_array = teams_with_zero_days 
-    elsif teams_with_one_future_day.length != 0 
-      team1_array = teams_with_one_future_day 
-      if weekday != 'Saturday' and weekday != 'Sunday' 
-        # Team1 should try to take from Saturday if possible
-        day_filter = teams_with_future_saturday.length != 0 ? teams_with_future_saturday
-                                                            : teams_with_future_sunday
-      end
-    else
-      team1_array = teams_with_one_day
-    end
-    unless day_filter.length == 0
-      p 
-      team1 = get_random_intersection_element(team1_array,day_filter)
-    else
-      team1 = get_random_element(team1_array)
-    end
-    team1_array.delete(team1)
-
-
-    # MEDL PROBLEM
-    # When scheduling on a day where the only candidates are those with FUTURE ice times already allocated
-    # Need to select one from each day, if possible.
-
-    day_filter = []
-    if teams_with_zero_days.length != 0 
-      team2_array = teams_with_zero_days 
-    elsif teams_with_one_future_day.length != 0 
-      team2_array = teams_with_one_future_day 
-      # Team2 should try to take from Sunday if possible
-      if weekday != 'Saturday' and weekday != 'Sunday' 
-        day_filter = teams_with_future_sunday.length != 0 ? teams_with_future_sunday
-                                                          : teams_with_future_saturday
-      end
-    else
-      team2_array = teams_with_one_day
-    end
-    unless day_filter.length == 0
-      team2 = get_random_intersection_element(team2_array,day_filter)
-    else
-      team2 = get_random_element(team2_array)
-    end
     team2_array.delete(team2)
 
     x = "------ Scheduling: "
@@ -533,7 +451,7 @@ class Scheduler
       #['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].each do |weekday|
       ['Sunday','Saturday','Friday','Thursday','Wednesday','Tuesday','Monday'].each do |weekday|
         @db.get_times_for_day(week, weekday).each do |timeslot|
-          team1,team2 = allocations.allocate_two_teams2(weekday)
+          team1,team2 = allocations.allocate_two_teams(weekday)
           #x = "%s %s %s %s %s" %week %weekday %team1 %team2 %timeslot.to_s
           #puts x
           @db.update_times_for_day(team1,team2,timeslot[0],timeslot[3])
