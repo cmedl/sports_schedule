@@ -1,7 +1,14 @@
 #!/usr/bin/ruby
+# TO RUN:
+# rm peewee_sched.db;./sched.rb
+#
+# ASSUMPTIONS: 
+# 1. Only one tier (A/B/C) per division could have an odd# of teams, never two teams
+#
 
 require 'csv'
 require 'sqlite3'
+require 'test/unit'
 
 $rand_obj= Random.new
 def get_random_element(array)
@@ -11,7 +18,7 @@ def get_random_intersection_element(array1, array2)
   p array1.class
   p array2.class
   array = array1 & array2
-  x = "MEDL array"
+  x = "DUDE array"
   x << array.to_s
   puts x
   return array[$rand_obj.rand(array.length)]
@@ -48,13 +55,51 @@ end
 
 ########################################################
 class Balance
-  # Balance Rules:
-  # Balance-Ruletype => Priority (1 = highest, 0 means rule does not apply)
-  @location_balance= ["Carleton",]
-  @time_balance = {'6:00:00 AM' => 1,
-                   '6:30:00 AM' => 2,
-                   '7:%AM' => 3,
-                   '8:%AM' => 4}
+  def initialize
+    @times = {}
+    @locations = ['CU']
+    _read
+  end
+
+  def _read
+    File.open("time_balance.cfg") do |file|
+      while line = file.gets
+        entry = line.split(",")
+        @times[entry[0]] = []
+        entry.each_index do |idx|
+          next if idx == 0
+          @times[entry[0]].push(entry[idx].chomp)
+        end
+      end
+    end
+    #puts "---------"
+    #puts @times.keys
+    #puts "---------"
+    @times.each do |div,div_times|
+      div_times.each do |time|
+        x = ""
+        x << div << ":" << time 
+        #puts x
+      end
+    end
+  end
+
+  def get_bad_times(division)
+    return @times[division]
+  end
+end
+
+class Constraints
+  def initialize
+    # @constraints[division][team][day][
+    @constraints = {}
+  end
+
+  def insert(division, team, start_day, end_day=start_day, start_hour=0, end_hour=24)
+  end
+
+  def get_teams_with_constraints(division, day) 
+  end
 end
 
 class Division
@@ -67,16 +112,28 @@ class Division
   def _read
     File.open("division.cfg") do |file|
       while line = file.gets
-        entry = line.split(":")
-        @division[entry[0]] = [entry[1].to_i, entry[2].to_i, entry[3].to_i, entry[4].chomp]
+        entry = line.split(",")
+        @division[entry[0]] = [entry[1].to_i, entry[2].to_i, entry[3].to_i, entry[4].chomp, entry[5]]
       end
     end
+    puts(@division['Peewee'][4])
   end
   
   def get_all_teams(division)
+    return get_a_teams(division) + get_b_teams(division) + get_c_teams(division)
+  end
+  def get_a_teams(division)
     teams = []
     (1..count_a_teams(division)).each do |team_num| teams.push(prefix(division) + 'A' + team_num.to_s) end
+    return teams
+  end
+  def get_b_teams(division)
+    teams = []
     (1..count_b_teams(division)).each do |team_num| teams.push(prefix(division) + 'B' + team_num.to_s) end
+    return teams
+  end
+  def get_c_teams(division)
+    teams = []
     (1..count_c_teams(division)).each do |team_num| teams.push(prefix(division) + 'C' + team_num.to_s) end
     return teams
   end
@@ -95,6 +152,18 @@ class Division
   end
   def prefix(division)
     return @division[division][3]
+  end
+  def has_odd_number_of_teams(division)
+    return count_total_teams(division) % 2
+  end
+  def has_odd_number_of_a_teams(division)
+    return count_a_teams(division) % 2
+  end
+  def has_odd_number_of_b_teams(division)
+    return count_b_teams(division) % 2
+  end
+  def has_odd_number_of_c_teams(division)
+    return count_c_teams(division) % 2
   end
 
   def dump_all
@@ -169,7 +238,7 @@ end
 
 class SchedDb
   def initialize(test_file)
-    # MEDL this shouldn't be here, need to fix up some functions
+    # TODO this shouldn't be here, need to fix up some functions
     @div = Division.new()
     @file = "peewee_sched.db"
     #@sched = OldCsvSched.new("sched_from_andy_unavailRemoved.csv")
@@ -195,11 +264,15 @@ class SchedDb
                  Hour INTEGER,
                  Minute INTEGER);")
 
-    @DB.execute("CREATE TABLE if not exists time_balance (
+    @DB.execute("CREATE TABLE if not exists constraints (
+                 Week VARCHAR,
+                 Division VARCHAR,
                  Team VARCHAR,
-                 Time VARCHAR,
-                 Priority 
-                 Count INTEGER);")
+                 StartDay VARCHAR,
+                 EndDay VARCHAR, 
+                 StartHour INTEGER,
+                 EndHour INTEGER,
+                 Reason VARCHAR);")
 
     @DB.execute("CREATE TABLE if not exists location_balance (
                  Team VARCHAR,
@@ -209,6 +282,20 @@ class SchedDb
     @DB.execute("CREATE TABLE if not exists solo_balance (
                  Team VARCHAR,
                  Count INTEGER);")
+  end
+
+  def insert_constraint(division, team, week, start_day, end_day, start_hour, end_hour)
+    insert_q = "INSERT INTO constraint VALUES (?,?,?,?,?,?,?)" 
+    @DB.execute(insert_q,
+                division,
+                week,
+                start_day,
+                end_day, 
+                start_hour,
+                end_hour)
+  end
+
+  def get_all_constraints(division, week)
   end
 
   def insert_new_icetimes(sched)
@@ -241,13 +328,35 @@ class SchedDb
   end
 
   def count_hours_for_team(hour, team)
-    query = 'select count(hour) from schedule where hour = ? and (HomeTeam = ? or VisitorTeam = ?)' 
+    query = 'select count(hour) from schedule where hour = ? AND (HomeTeam = ? or VisitorTeam = ?)' 
     @DB.execute(query, hour, team, team) do |data| return data[0] end
   end
 
-  def count_times_to_balance(time)
-    query = 'select count(starttime) from schedule where starttime like ? and HomeTeam is NULL'
-    @DB.execute(query, time) do |data| return data[0] end
+  def count_hours_to_schedule(week, weekday)
+    query = 'select count(weekday) from schedule where week = ? AND weekday = ? and HomeTeam is NULL'
+    homeice = 0
+    visitorice = 0
+    @DB.execute(query, week, weekday) do |data| homeice = data[0] end
+    query = 'select count(weekday) from schedule where week = ? AND weekday = ? and VisitorTeam is NULL'
+    @DB.execute(query, week, weekday) do |data| visitorice = data[0] end
+    return homeice + visitorice
+  end
+
+  def get_teams_allocated_this_day(week, weekday)
+    query = 'select hometeam,visitorteam from schedule where week = ? and weekday = ? and (hometeam = ? or visitorteam = ?);'
+    teams_allocated = []
+    @div.get_all_teams('Peewee').each do |team|
+      @DB.execute(query, week, weekday, team, team).each do |data| 
+        teams_allocated.push(data[0])
+        teams_allocated.push(data[1])
+      end
+    end
+    return teams_allocated.uniq
+  end
+
+  def count_teams_to_schedule(week, weekday)
+    query = 'select count(weekday) from schedule where week = ? AND weekday = ? and HomeTeam is NULL'
+    @DB.execute(query, week, weekday) do |data| return data[0] end
   end
 
   def count_times_to_balance(time)
@@ -295,9 +404,16 @@ class SchedDb
   end
 
   def get_times_for_day(week, weekday)
-    query = 'select location,hour,minute,datetime from schedule where week = ? and weekday = ? and hometeam is NULL'
+    query = 'select location,starttime,datetime from schedule where week = ? and weekday = ? and hometeam is NULL'
     timeslots = []
     @DB.execute(query,week,weekday).each do |data| timeslots.push(data) end
+    return timeslots
+  end
+
+  def get_bad_time_for_day(week, weekday, starttime)
+    query = 'select location,starttime,datetime from schedule where week = ? and weekday = ? and hometeam is NULL and starttime = ?'
+    timeslots = []
+    @DB.execute(query,week,weekday,starttime).each do |data| timeslots.push(data) end
     return timeslots
   end
 
@@ -316,7 +432,7 @@ class TimeAllocations
     @allocations = @db.find_preallocations(week)
   end
 
-  def allocate_two_teams(weekday)
+  def allocate_two_teams(weekday,starttime)
     # count allocations for the week
     # count allocations SO FAR this week
     # Any allocations from this weekday are not in the future
@@ -333,13 +449,13 @@ class TimeAllocations
     @future_allocations.each do |team,days| teams_with_future_days.push(team) if days.length == 1 && nil == days.find_index(weekday) end
     teams_with_one_day.each do |team| teams_with_one_future_day.push(team) if teams_with_future_days.find_index(team) end
 
-    p weekday
-    x = "0:";x << teams_with_zero_days.to_s
-    puts x unless teams_with_zero_days.length == 0
-    x = "F:";x << teams_with_one_future_day.to_s
-    puts x unless teams_with_one_future_day.length == 0
-    x = "1:";x << teams_with_one_day.to_s
-    puts x unless teams_with_one_day.length == 0
+    #p weekday
+    #x = "0:";x << teams_with_zero_days.to_s
+    #puts x unless teams_with_zero_days.length == 0
+    #x = "F:";x << teams_with_one_future_day.to_s
+    #puts x unless teams_with_one_future_day.length == 0
+    #x = "1:";x << teams_with_one_day.to_s
+    #puts x unless teams_with_one_day.length == 0
 
     day_filter = []
     if teams_with_zero_days.length != 0 
@@ -353,7 +469,7 @@ class TimeAllocations
     team1_array.delete(team1)
 
 
-    # MEDL PROBLEM
+    # TODO PROBLEM????  (or solved because of scheduling in reverse chronological order?)
     # When scheduling on a day where the only candidates are those with FUTURE ice times already allocated
     # Need to select one from each day, if possible.
 
@@ -385,7 +501,7 @@ class Scheduler
     @db = SchedDb.new(test_file)
   end
 
-  # MEDL this needs to be rearchitected
+  # TODO this needs to be rearchitected
   def print_final_allocations
     teams = @div.get_all_teams('Peewee')
     line = "____"
@@ -429,18 +545,45 @@ class Scheduler
     end
   end
 
+  def _alloc_and_update(timeslot, allocations, weekday)
+    location = timeslot[0]
+    starttime = timeslot[1]
+    datetime = timeslot[2]
+    team1,team2 = allocations.allocate_two_teams(weekday, starttime)
+    x = "%s %s %s %s %s" %[starttime ,weekday ,team1 ,team2 ,timeslot.to_s]
+    puts x
+    @db.update_times_for_day(team1,team2,location,datetime)
+  end
 
-  def generate
+  def _count_hours_to_schedule(week, weekday)
+    return @db.count_hours_to_schedule(week,weekday)
+  end
+  def _count_teams_to_schedule(week, weekday, division, teams_scheduled)
+    # TODO MEDL enhance with constraints, or handle constraints elsewhere?
+    total_teams = @div.count_total_teams(division)
+    return total_teams - teams_scheduled.length
+  end
+  def _get_teams_scheduled(week, weekday, division)
+    teams_scheduled = @db.get_teams_allocated_this_day(week, weekday)
+    return teams_scheduled
+  end
+
+  def schedule_teams_with_constraints(week)
+  end
+
+  def generate(division)
+    time_balance = Balance.new
+    bad_times = time_balance.get_bad_times(division)
     @db.insert_new_icetimes(@sched)
-    time_600a = @db.count_times_to_balance("6:00:00 AM")# Count # of Time-Balance worthy icetimes
-    time_630a = @db.count_times_to_balance("6:30:00 AM")
-    time_7a = @db.count_times_to_balance("7:%AM")
-    time_8a = @db.count_times_to_balance("8:%AM")
-    time_8p = @db.count_times_to_balance("8:%PM")
-    #_dump_balance
+    #time_600a = @db.count_times_to_balance("6:00:00 AM")# Count # of Time-Balance worthy icetimes
+    #time_630a = @db.count_times_to_balance("6:30:00 AM")
+    #time_7a = @db.count_times_to_balance("7:%AM")
+    #time_8a = @db.count_times_to_balance("8:%AM")
+    #time_8p = @db.count_times_to_balance("8:%PM")
     @db.get_weeks.each do |week|
       allocations = TimeAllocations.new(week, @db)
 
+      schedule_teams_with_constraints(week)
       #next unless week == "Dec 1 - 7" 
       
       puts "---------------", week
@@ -448,13 +591,52 @@ class Scheduler
       #_get_teams_matching_hours_count(18, 1) 
       #_get_teams_matching_hours_count(18, 2) 
       #_get_teams_matching_hours_count(18, 3) 
-      #['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].each do |weekday|
+      
+      odd_num_teams = @div.has_odd_number_of_teams(division)
+      # TODO we should do this always...
+      if odd_num_teams 
+        total_teams = @div.count_total_teams(division)
+        odd_a_teams = @div.has_odd_number_of_a_teams(division)
+        odd_b_teams = @div.has_odd_number_of_b_teams(division)
+        odd_c_teams = @div.has_odd_number_of_c_teams(division)
+        sunday_spots = _count_hours_to_schedule(week, 'Sunday')
+        saturday_spots = _count_hours_to_schedule(week, 'Saturday')
+        teams_scheduled_sunday = _get_teams_scheduled(week, 'Sunday', division)
+        teams_scheduled_saturday = _get_teams_scheduled(week, 'Saturday', division)
+        sunday_teams = _count_teams_to_schedule(week, 'Sunday', division, teams_scheduled_sunday)
+        saturday_teams = _count_teams_to_schedule(week, 'Saturday', division, teams_scheduled_saturday )
+        puts "" << odd_num_teams.to_s << ":" << odd_a_teams.to_s << ":" << odd_b_teams.to_s << ":" << odd_c_teams.to_s << ":" 
+        if (saturday_teams > saturday_spots) || (sunday_teams > sunday_spots)
+          if odd_a_teams
+            odd_teams = @div.get_a_teams(division)
+          elsif odd_b_teams
+            odd_teams = @div.get_b_teams(division)
+          else 
+            odd_teams = @div.get_c_teams(division)
+          end
+          preallocations = @db.find_preallocations(week)
+             
+          # 1. Find out if a/b/c
+          # 2. Find one odd team to make miss a Sunday
+          # 3. Add constraint for that team for Saturday
+          # 4. Find one other odd team to make miss a Saturday.
+          # 5. Add constraint for that team for Sunday.
+          # 6. Schedule those teams for one weekday slot.
+        else
+          puts("WHAT NO WORK TO do - " << week << " " << saturday_teams.to_s << ":" << saturday_spots.to_s << ":" << sunday_teams.to_s << ":" << sunday_spots.to_s )
+        end
+      end
       ['Sunday','Saturday','Friday','Thursday','Wednesday','Tuesday','Monday'].each do |weekday|
+        bad_times.each do |bad_starttime|
+          #puts "MEDL1.0 - " << " : " << weekday << " : " << bad_starttime.to_s  
+          @db.get_bad_time_for_day(week, weekday, bad_starttime) do |timeslot|
+            #puts "MEDL1 - " << timeslot.to_s << " : " << weekday << " : "  
+            _alloc_and_update(timeslot, allocations, weekday)
+          end
+        end
+        
         @db.get_times_for_day(week, weekday).each do |timeslot|
-          team1,team2 = allocations.allocate_two_teams(weekday)
-          #x = "%s %s %s %s %s" %week %weekday %team1 %team2 %timeslot.to_s
-          #puts x
-          @db.update_times_for_day(team1,team2,timeslot[0],timeslot[3])
+          _alloc_and_update(timeslot, allocations, weekday)
         end
        #p timeslots
        #p timeslots.class
@@ -485,11 +667,18 @@ class Scheduler
   end
 end
 
-#schedule = Scheduler.new("test1.csv")
-schedule = Scheduler.new("sched_big_empty.csv")
-schedule.generate
-schedule.print_weekly_allocations
+schedule = Scheduler.new("test1.csv")
+#schedule = Scheduler.new("sched_big_empty.csv")
+schedule.generate('Peewee')
+#schedule.print_weekly_allocations
 schedule.print_final_allocations
 
+
+
+class TestConstraints < Test::Unit::TestCase
+  def test_insert
+    pass
+  end
+end
 
 
